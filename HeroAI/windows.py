@@ -4,7 +4,17 @@ from Py4GWCoreLib import UIManager, ModelID, GLOBAL_CACHE
 
 from .constants import MAX_NUM_PLAYERS, NUMBER_OF_SKILLS
 from .types import SkillType, SkillNature, Skilltarget, GameOptionStruct
-from .globals import capture_mouse_timer, show_area_rings, show_hero_follow_grid, show_distance_on_followers, hero_formation, capture_hero_flag, capture_flag_all, capture_hero_index
+from .globals import (
+    capture_mouse_timer,
+    show_area_rings,
+    show_hero_follow_grid,
+    show_distance_on_followers,
+    hero_formation,
+    capture_hero_flag,
+    capture_flag_all,
+    capture_hero_index,
+)
+from .follow_bt import FollowNode
 from .utils import IsHeroFlagged, DrawFlagAll, DrawHeroFlag, DistanceFromWaypoint
 
 from .cache_data import CacheData
@@ -505,16 +515,107 @@ def DrawFollowDebug(cached_data:CacheData):
         Overlay().DrawPoly3D(player_x, player_y, player_z, Range.Spellcast.value, Utils.RGBToColor(255, 12 , 0 , 128), numsegments=segments, thickness=2.0)
 
     if show_hero_follow_grid:
-        leader_x, leader_y, leader_z = GLOBAL_CACHE.Agent.GetXYZ(GLOBAL_CACHE.Party.GetPartyLeaderID()) #cached_data.data.party_leader_xyz #needs to be live 
+        leader_id = GLOBAL_CACHE.Party.GetPartyLeaderID()
+        if leader_id != 0:
+            leader_x, leader_y, leader_z = GLOBAL_CACHE.Agent.GetXYZ(leader_id)
+            leader_angle = GLOBAL_CACHE.Agent.GetRotationAngle(leader_id)
 
-        for index, angle in enumerate(hero_formation):
-            if index == 0:
-                continue
-            angle_on_hero_grid = GLOBAL_CACHE.Agent.GetRotationAngle(GLOBAL_CACHE.Party.GetPartyLeaderID()) + Utils.DegToRad(angle)
-            hero_x = Range.Touch.value * math.cos(angle_on_hero_grid) + leader_x
-            hero_y = Range.Touch.value * math.sin(angle_on_hero_grid) + leader_y
-            
-            Overlay().DrawPoly3D(hero_x, hero_y, leader_z, radius=Range.Touch.value /2, color=Utils.RGBToColor(255, 0, 255, 128), numsegments=segments, thickness=2.0)
+            # Napravi listu aktivnih followera (ne lidera)
+            active_followers = []
+            for party_number in range(MAX_NUM_PLAYERS):
+                player_struct = cached_data.HeroAI_vars.all_player_struct[party_number]
+                if not player_struct.IsActive:
+                    continue
+                hero_id = player_struct.PlayerID
+                if hero_id == 0 or hero_id == leader_id:
+                    continue
+                active_followers.append(hero_id)
+
+            # Crtaj formacijske pozicije za svakog aktivnog followera
+            for follower_index, hero_id in enumerate(active_followers):
+                # Privremeno postavi player_id u cached_data da _get_relative_slot radi za ovaj hero
+                # (ovo je hack za debug – u realnom izvršavanju _get_relative_slot koristi GLOBAL_CACHE.Player.GetAgentID())
+                # Ali kako _get_relative_slot već gleda svoj player_id, ovo neće raditi bez pomoćne funkcije.
+                # Umesto toga, direktno računamo ugao kao da je follower_index relativni slot.
+                
+                leader_type = "melee" if GLOBAL_CACHE.Agent.IsMelee(leader_id) else "ranged"
+                is_melee_hero = GLOBAL_CACHE.Agent.IsMelee(hero_id)
+                
+                # Dinamicko mapiranje kao u FollowNode._get_angle_for_slot
+                if leader_type == "melee":
+                    from HeroAI.globals import formation_melee_leader_melee, formation_melee_leader_ranged
+                    formation = formation_melee_leader_melee if is_melee_hero else formation_melee_leader_ranged
+                elif leader_type == "spear":
+                    from HeroAI.globals import formation_spear_leader_melee, formation_spear_leader_ranged
+                    formation = formation_spear_leader_melee if is_melee_hero else formation_spear_leader_ranged
+                else:
+                    from HeroAI.globals import formation_ranged_leader_melee, formation_ranged_leader_ranged
+                    formation = formation_ranged_leader_melee if is_melee_hero else formation_ranged_leader_ranged
+
+                follower_count = max(len(active_followers), 1)
+
+                if follower_count == 1:
+                    mapped_index = len(formation) // 2
+                elif follower_count == 2:
+                    center = len(formation) // 2
+                    if follower_index == 0:
+                        mapped_index = max(center - 1, 0)
+                    else:
+                        mapped_index = min(center + 1, len(formation) - 1)
+                elif follower_count <= 4:
+                    center = len(formation) // 2
+                    offset_map = [-1, 0, 1, 2]
+                    idx = follower_index
+                    if idx >= len(offset_map):
+                        idx = len(offset_map) - 1
+                    mapped_index = center + offset_map[idx]
+                    mapped_index = max(0, min(mapped_index, len(formation) - 1))
+                else:
+                    mapped_index = follower_index
+
+                if 0 <= mapped_index < len(formation):
+                    formation_angle_deg = formation[mapped_index]
+                else:
+                    from HeroAI.globals import hero_formation
+                    if 0 <= follower_index < len(hero_formation):
+                        formation_angle_deg = hero_formation[follower_index]
+                    else:
+                        formation_angle_deg = 0.0
+                
+                angle_on_hero_grid = leader_angle + Utils.DegToRad(formation_angle_deg)
+
+                # u debug prikazu koristimo bazni radius bez sabijanja (lakše se vidi obrazac)
+                # ali za ranged/ranged koristimo isti scale kao u follow_bt (1.6)
+                base_radius = Range.Touch.value
+                if leader_type != "melee" and not is_melee_hero:
+                    base_radius = Range.Touch.value * 1.6
+                
+                hero_x = base_radius * math.cos(angle_on_hero_grid) + leader_x
+                hero_y = base_radius * math.sin(angle_on_hero_grid) + leader_y
+
+                # magenta prsten – gde bi ovaj slot TREBAO da stoji
+                Overlay().DrawPoly3D(
+                    hero_x,
+                    hero_y,
+                    leader_z,
+                    radius=Range.Touch.value / 2,
+                    color=Utils.RGBToColor(255, 0, 255, 128),
+                    numsegments=segments,
+                    thickness=2.0,
+                )
+
+                # beli prsten na stvarnoj poziciji heroja radi uporedjivanja
+                if GLOBAL_CACHE.Agent.DoesAgentExist(hero_id):
+                    real_x, real_y, real_z = GLOBAL_CACHE.Agent.GetXYZ(hero_id)
+                    Overlay().DrawPoly3D(
+                        real_x,
+                        real_y,
+                        real_z,
+                        radius=Range.Touch.value / 2,
+                        color=Utils.RGBToColor(255, 255, 255, 128),
+                        numsegments=segments,
+                        thickness=2.0,
+                    )
  
     if show_distance_on_followers:
         for i in range(MAX_NUM_PLAYERS):
@@ -532,7 +633,23 @@ def DrawFollowDebug(cached_data:CacheData):
     
 def DrawOptions(cached_data:CacheData):
     cached_data.ui_state_data.show_classic_controls = PyImGui.checkbox("Show Classic Controls", cached_data.ui_state_data.show_classic_controls)
-    #TODO Select combat engine options
+    # Formations / leader info (read-only za sada)
+    leader_id = GLOBAL_CACHE.Party.GetPartyLeaderID()
+    if leader_id != 0:
+        is_leader_melee = GLOBAL_CACHE.Agent.IsMelee(leader_id)
+        leader_type = "Melee" if is_leader_melee else "Ranged/Spear"
+        PyImGui.separator()
+
+        # Zelen label radi lakšeg prepoznavanja
+        PyImGui.push_style_color(PyImGui.ImGuiCol.Text, Utils.RGBToNormal(0, 255, 0, 255))
+        PyImGui.text(f"Leader type: {leader_type}")
+        PyImGui.pop_style_color(1)
+
+        PyImGui.text("Formations (by leader type):")
+        PyImGui.bullet_text("Melee leader – Melee heroes: Backline wedge")
+        PyImGui.bullet_text("Melee leader – Ranged heroes: Rear arc")
+        PyImGui.bullet_text("Ranged/Spear leader – Melee heroes: Front shield")
+        PyImGui.bullet_text("Ranged/Spear leader – Ranged heroes: Side line / rear arc")
 
 
 class ButtonColor:

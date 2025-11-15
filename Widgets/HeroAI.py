@@ -12,12 +12,12 @@ from HeroAI.constants import PARTY_WINDOW_FRAME_OUTPOST_OFFSETS
 from HeroAI.constants import PARTY_WINDOW_HASH
 from HeroAI.constants import RANGED_RANGE_VALUE
 from HeroAI.game_option import UpdateGameOptions
-from HeroAI.globals import hero_formation
 from HeroAI.players import RegisterHeroes
 from HeroAI.players import RegisterPlayer
 from HeroAI.players import UpdatePlayers
 from HeroAI.utils import DistanceFromLeader
 from HeroAI.utils import DistanceFromWaypoint
+from HeroAI.follow_bt import should_tick_follow_bt, get_follow_bt
 from HeroAI.windows import CompareAndSubmitGameOptions
 from HeroAI.windows import DrawCandidateWindow
 from HeroAI.windows import DrawControlPanelWindow
@@ -221,7 +221,9 @@ def Follow(cached_data: CacheData):
         return False
 
     hero_grid_pos = party_number + GLOBAL_CACHE.Party.GetHeroCount() + GLOBAL_CACHE.Party.GetHenchmanCount()
-    angle_on_hero_grid = follow_angle + Utils.DegToRad(hero_formation[hero_grid_pos])
+    # Napomena: precizan formation follow sada je u follow_bt.FollowNode;
+    # ovde zadržavamo originalnu logiku samo za kompatibilnost ako se direktno pozove.
+    angle_on_hero_grid = follow_angle
 
     if following_flag:
         xx = follow_x
@@ -326,6 +328,10 @@ def DrawFramedContent(cached_data: CacheData, content_frame_id):
                 DrawFlaggingWindow(cached_data)
             case TabType.config:
                 DrawOptions(cached_data)
+            case TabType.debug:
+                # Embedded debug window (follow grid, distances, etc.)
+                from HeroAI.windows import DrawDebugWindow
+                DrawDebugWindow(cached_data)
             case TabType.messaging:
                 # Placeholder for messaging tab
                 DrawMessagingOptions(cached_data)
@@ -377,6 +383,11 @@ def DrawEmbeddedWindow(cached_data: CacheData):
                     selected_tab = TabType.flagging
                     PyImGui.end_tab_item()
                 ImGui.show_tooltip("Flagging")
+            # Debug tab always available inside embedded HeroAI window
+            if PyImGui.begin_tab_item(IconsFontAwesome5.ICON_BUG + "##debugTab"):
+                selected_tab = TabType.debug
+                PyImGui.end_tab_item()
+            ImGui.show_tooltip("Debug / Follow Overlay")
             if PyImGui.begin_tab_item(IconsFontAwesome5.ICON_COGS + "##configTab"):
                 selected_tab = TabType.config
                 PyImGui.end_tab_item()
@@ -412,66 +423,20 @@ def UpdateStatus(cached_data: CacheData):
 
     draw_Targeting_floating_buttons(cached_data)
 
-    if (
-        not GLOBAL_CACHE.Agent.IsAlive(GLOBAL_CACHE.Player.GetAgentID())
-        or DistanceFromLeader(cached_data) >= Range.SafeCompass.value
-        or GLOBAL_CACHE.Agent.IsKnockedDown(GLOBAL_CACHE.Player.GetAgentID())
-        or cached_data.combat_handler.InCastingRoutine()
-        or GLOBAL_CACHE.Agent.IsCasting(GLOBAL_CACHE.Player.GetAgentID())
-    ):
-        return
-
-    if LootingRoutineActive():
-        return
-
-    cached_data.UdpateCombat()
-    if HandleOutOfCombat(cached_data):
-        return
-
-    if GLOBAL_CACHE.Agent.IsMoving(GLOBAL_CACHE.Player.GetAgentID()):
-        return
+    # Odavde nadalje: samo follow BT (bez combat logike za sada)
 
     if Loot(cached_data):
+        Py4GW.Console.Log(MODULE_NAME, "[HeroAI] Loot() handled, skipping follow", Py4GW.Console.MessageType.Debug)
         return
 
-    if cached_data.follow_throttle_timer.IsExpired():
-        if Follow(cached_data):
-            cached_data.follow_throttle_timer.Reset()
-            return
-
-    if HandleCombat(cached_data):
-        cached_data.auto_attack_timer.Reset()
+    # === FOLLOW BEHAVIOR TREE ===
+    if not should_tick_follow_bt():
         return
 
-    if not cached_data.data.in_aggro:
-        return
-
-    target_id = GLOBAL_CACHE.Player.GetTargetID()
-    _, target_aliegance = GLOBAL_CACHE.Agent.GetAllegiance(target_id)
-
-    if target_id == 0 or GLOBAL_CACHE.Agent.IsDead(target_id) or (target_aliegance != "Enemy"):
-        if (
-            cached_data.data.is_combat_enabled
-            and (not GLOBAL_CACHE.Agent.IsAttacking(GLOBAL_CACHE.Player.GetAgentID()))
-            and (not GLOBAL_CACHE.Agent.IsCasting(GLOBAL_CACHE.Player.GetAgentID()))
-            and (not GLOBAL_CACHE.Agent.IsMoving(GLOBAL_CACHE.Player.GetAgentID()))
-        ):
-            cached_data.combat_handler.ChooseTarget()
-            cached_data.auto_attack_timer.Reset()
-            return
-
-    # auto attack
-    if cached_data.auto_attack_timer.HasElapsed(cached_data.auto_attack_time) and cached_data.data.weapon_type != 0:
-        if (
-            cached_data.data.is_combat_enabled
-            and (not GLOBAL_CACHE.Agent.IsAttacking(GLOBAL_CACHE.Player.GetAgentID()))
-            and (not GLOBAL_CACHE.Agent.IsCasting(GLOBAL_CACHE.Player.GetAgentID()))
-            and (not GLOBAL_CACHE.Agent.IsMoving(GLOBAL_CACHE.Player.GetAgentID()))
-        ):
-            cached_data.combat_handler.ChooseTarget()
-        cached_data.auto_attack_timer.Reset()
-        cached_data.combat_handler.ResetSkillPointer()
-        return
+    Py4GW.Console.Log(MODULE_NAME, "[HeroAI] Ticking follow BT", Py4GW.Console.MessageType.Debug)
+    follow_bt = get_follow_bt(cached_data)
+    status = follow_bt.tick()
+    Py4GW.Console.Log(MODULE_NAME, f"[HeroAI] Follow BT tick status={status.name}", Py4GW.Console.MessageType.Debug)
 
 
 def configure():
@@ -479,7 +444,7 @@ def configure():
 
 
 def main():
-    global cached_data
+    # global cached_data
     try:
         if not Routines.Checks.Map.MapValid():
             return
@@ -507,3 +472,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
