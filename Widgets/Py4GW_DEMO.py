@@ -2767,7 +2767,26 @@ def main():
         pass
 
 # This ensures that Main() is called when the script is executed directly.
+
 if __name__ == "__main__":
     main()
+
+# === Behavior Tree Debugger Integration ===
+
+# === Behavior Tree Debugger Integration ===
+
+# === Behavior Tree Debugger Integration ===
+from BTStandalone import draw_bt_debugger, open_bt_debugger
+
+# To integrate the BT Debugger window, call open_bt_debugger() and draw_bt_debugger()
+# inside the main ImGui draw function for Py4GW_DEMO, after the main content is drawn.
+
+def draw_py4gw_demo_widget():
+    if PyImGui.begin("Py4GW_DEMO", True):
+        # ...existing Py4GW_DEMO UI content...
+        # At the end, before returning:
+        from BTStandalone import draw_bt_debugger
+        draw_bt_debugger()
+    PyImGui.end()
 
 

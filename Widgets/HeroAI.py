@@ -38,6 +38,7 @@ from Py4GWCoreLib import Keystroke
 from Py4GWCoreLib import LootConfig
 from Py4GWCoreLib import Overlay
 from Py4GWCoreLib import PyImGui
+from BTStandalone import draw_bt_debugger
 from Py4GWCoreLib import Range
 from Py4GWCoreLib import Routines
 from Py4GWCoreLib import ThrottledTimer
@@ -377,6 +378,11 @@ def DrawEmbeddedWindow(cached_data: CacheData):
                     selected_tab = TabType.flagging
                     PyImGui.end_tab_item()
                 ImGui.show_tooltip("Flagging")
+
+            # --- Always draw Behavior Tree Debugger at bottom of header ---
+            draw_bt_debugger()
+
+            # Additional tabs after debugger
             if PyImGui.begin_tab_item(IconsFontAwesome5.ICON_COGS + "##configTab"):
                 selected_tab = TabType.config
                 PyImGui.end_tab_item()
